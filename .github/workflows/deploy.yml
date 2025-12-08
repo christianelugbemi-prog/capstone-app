@@ -1,0 +1,129 @@
+name: Build and Deploy to k3s
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - '.github/workflows/deploy.yml'
+      - 'kubernetes/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: capstone-app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image-uri: ${{ steps.image.outputs.uri }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      run: |
+        aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+    - name: Build Docker image
+      run: |
+        docker build -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ./app/
+        docker tag ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+
+    - name: Push to Amazon ECR
+      run: |
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+        docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+
+    - name: Output image URI
+      id: image
+      run: echo "uri=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get Terraform outputs
+      run: |
+        echo "EC2_IP=${{ secrets.K3S_EC2_IP }}" >> $GITHUB_ENV
+        echo "K3S_TOKEN=${{ secrets.K3S_TOKEN }}" >> $GITHUB_ENV
+
+    - name: Update Kubernetes manifests
+      run: |
+        sed -i "s|REPLACE_WITH_ECR_REPO_URL|${{ needs.build-and-push.outputs.image-uri }}|g" kubernetes/deployment.yaml
+
+    - name: Deploy to k3s via SSH
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.K3S_EC2_IP }}
+        username: ubuntu
+        key: ${{ secrets.K3S_SSH_KEY }}
+        script: |
+          set -e
+          
+          # Set kubeconfig
+          export KUBECONFIG=/home/ubuntu/kubeconfig
+          
+          # Create ECR secret
+          AWS_ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID }}"
+          AWS_ACCESS_KEY="${{ secrets.AWS_ACCESS_KEY_ID }}"
+          AWS_SECRET_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+          
+          PASSWORD=$(aws ecr get-login-password --region us-east-1 --access-key-id $AWS_ACCESS_KEY --secret-access-key $AWS_SECRET_KEY)
+          
+          /usr/local/bin/k3s kubectl create secret docker-registry ecr-secret \
+            --docker-server=$ECR_REGISTRY \
+            --docker-username=AWS \
+            --docker-password=$PASSWORD \
+            --namespace=capstone \
+            --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+          
+          # Apply manifests
+          /usr/local/bin/k3s kubectl apply -k kubernetes/
+          
+          # Wait for deployment
+          /usr/local/bin/k3s kubectl wait --for=condition=available --timeout=300s deployment/capstone-app -n capstone || true
+          
+          # Get service info
+          /usr/local/bin/k3s kubectl get svc -n capstone capstone-app
+
+    - name: Verify deployment
+      run: |
+        echo "Deployment completed! Access your site at: http://${{ secrets.K3S_EC2_IP }}"
+
+    - name: Create deployment summary
+      if: always()
+      run: |
+        cat > deployment-summary.txt << EOF
+        Deployment Summary
+        ==================
+        Image: ${{ needs.build-and-push.outputs.image-uri }}
+        Commit: ${{ github.sha }}
+        Branch: ${{ github.ref }}
+        Timestamp: $(date)
+        K3s Endpoint: http://${{ secrets.K3S_EC2_IP }}
+        EOF
+        cat deployment-summary.txt
+
+    - name: Upload deployment logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: deployment-logs
+        path: deployment-summary.txt

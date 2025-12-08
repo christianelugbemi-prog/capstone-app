@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: capstone
+
+resources:
+- deployment.yaml
+- service.yaml
+
+commonLabels:
+  app: capstone-app
+  managed-by: capstone-cicd
+
+commonAnnotations:
+  deployment-tool: github-actions
+  version: "1.0"
