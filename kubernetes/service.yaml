@@ -6,13 +6,12 @@ metadata:
   labels:
     app: capstone-app
 spec:
-  type: LoadBalancer
+  type: NodePort
   ports:
   - port: 80
-    targetPort: http
+    targetPort: 80
+    nodePort: 30080
     protocol: TCP
     name: http
   selector:
     app: capstone-app
-  sessionAffinity: ClientIP
-  externalTrafficPolicy: Local
