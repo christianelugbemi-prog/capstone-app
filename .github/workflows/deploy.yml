@@ -25,6 +25,12 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -83,33 +89,20 @@ jobs:
       run: |
         ssh -o StrictHostKeyChecking=no -i id_rsa ubuntu@${{ secrets.K3S_EC2_IP }} /bin/bash -s <<'EOF'
         set -e
-
         export KUBECONFIG=/home/ubuntu/kubeconfig
 
-        # Extract manifests
         tar -xzf /home/ubuntu/k8s.tar.gz -C /home/ubuntu/
-
-        # Create ECR pull secret (uses AWS creds passed from Actions runner into the remote command)
-        AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$GITHUB_SECRET_AWS_ACCOUNT_ID}"
-        # The next two lines are expanded by the runner with secrets (kept masked in logs)
-        AWS_ACCESS_KEY="${{ secrets.AWS_ACCESS_KEY_ID }}"
-        AWS_SECRET_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-        ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com"
 
         PASSWORD=$(aws ecr get-login-password --region us-east-1)
 
         /usr/local/bin/k3s kubectl create secret docker-registry ecr-secret \
-          --docker-server="$ECR_REGISTRY" \
+          --docker-server="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com" \
           --docker-username=AWS \
           --docker-password="$PASSWORD" \
           --namespace=capstone --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
 
-        # Apply manifests that were copied to /home/ubuntu/kubernetes
         /usr/local/bin/k3s kubectl apply -k /home/ubuntu/kubernetes/
-
-        # Wait for the deployment
         /usr/local/bin/k3s kubectl wait --for=condition=available --timeout=300s deployment/capstone-app -n capstone || true
-
         /usr/local/bin/k3s kubectl get svc -n capstone capstone-app
         EOF
 
