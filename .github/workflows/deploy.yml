@@ -1,45 +1,47 @@
-deploy:
-  needs: build-and-push
-  runs-on: ubuntu-latest
-  if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    - name: Deploy to K3s
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.K3S_HOST }}
+        username: ubuntu
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          # Use the k3s kubeconfig
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-  steps:
-  - name: Checkout code
-    uses: actions/checkout@v4
+          # Apply deployment manifest with updated image
+          /usr/local/bin/k3s kubectl apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: capstone-app
+            namespace: ${{ env.K8S_NAMESPACE }}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: capstone-app
+            template:
+              metadata:
+                labels:
+                  app: capstone-app
+              spec:
+                containers:
+                - name: capstone-app
+                  image: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+                  ports:
+                  - containerPort: 80
+                  resources:
+                    requests:
+                      cpu: 50m
+                      memory: 64Mi
+                    limits:
+                      cpu: 200m
+                      memory: 256Mi
+          EOF
 
-  - name: Deploy to K3s via SSH
-    uses: appleboy/ssh-action@master
-    with:
-      host: ${{ secrets.K3S_HOST }}
-      username: ubuntu
-      key: ${{ secrets.SSH_PRIVATE_KEY }}
-      script: |
-        set -e
+          # Wait for rollout
+          /usr/local/bin/k3s kubectl rollout status deployment/capstone-app -n ${{ env.K8S_NAMESPACE }} --timeout=5m
 
-        echo "==> Setting kubeconfig"
-        export KUBECONFIG=/home/ubuntu/.kube/config
-
-        echo "==> Checking Kubernetes connectivity"
-        kubectl get nodes || { echo "Cluster not reachable"; exit 1; }
-
-        echo "==> Updating image"
-        kubectl set image deployment/capstone-app \
-          capstone-app=${{ env.DOCKER_IMAGE }}:${{ github.sha }} \
-          -n ${{ env.K8S_NAMESPACE }}
-
-        echo "==> Forcing new rollout"
-        kubectl rollout restart deployment/capstone-app -n ${{ env.K8S_NAMESPACE }}
-
-        echo "==> Waiting for rollout"
-        kubectl rollout status deployment/capstone-app \
-          -n ${{ env.K8S_NAMESPACE }} \
-          --timeout=5m || {
-            echo "Rollout FAILED. Showing logs..."
-            kubectl describe deployment capstone-app -n ${{ env.K8S_NAMESPACE }}
-            kubectl get pods -n ${{ env.K8S_NAMESPACE }}
-            exit 1
-          }
-
-        echo "==> Deployment successful"
-        kubectl get pods -n ${{ env.K8S_NAMESPACE }}
-        kubectl get svc -n ${{ env.K8S_NAMESPACE }}
+          # Show deployment status
+          /usr/local/bin/k3s kubectl get pods -n ${{ env.K8S_NAMESPACE }}
+          /usr/local/bin/k3s kubectl get svc -n ${{ env.K8S_NAMESPACE }}
