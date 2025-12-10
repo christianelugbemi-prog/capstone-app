@@ -58,8 +58,14 @@ jobs:
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
-          # Update kubeconfig
-          export KUBECONFIG=/home/ubuntu/.kube/config
+          # Set up kubectl for K3s
+          mkdir -p ~/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          sudo chown ubuntu:ubuntu ~/.kube/config
+          export KUBECONFIG=~/.kube/config
+          
+          # Create namespace if it doesn't exist
+          kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
           
           # Update deployment image
           kubectl set image deployment/capstone-app \
