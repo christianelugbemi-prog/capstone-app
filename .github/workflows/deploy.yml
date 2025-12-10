@@ -96,7 +96,7 @@ jobs:
         AWS_SECRET_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
         ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com"
 
-        PASSWORD=$(aws ecr get-login-password --region us-east-1 --access-key-id "$AWS_ACCESS_KEY" --secret-access-key "$AWS_SECRET_KEY")
+        PASSWORD=$(aws ecr get-login-password --region us-east-1)
 
         /usr/local/bin/k3s kubectl create secret docker-registry ecr-secret \
           --docker-server="$ECR_REGISTRY" \
